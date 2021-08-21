@@ -44,8 +44,10 @@ const (
 
 var (
 	db                  *sqlx.DB
+	readonlyDb          *sqlx.DB
 	sessionStore        sessions.Store
 	mySQLConnectionData *MySQLConnectionEnv
+	mySQLReadonlyConnectionData *MySQLConnectionEnv
 
 	jiaJWTSigningKey *ecdsa.PublicKey
 
@@ -189,6 +191,16 @@ func NewMySQLConnectionEnv() *MySQLConnectionEnv {
 	}
 }
 
+func NewReadonlyMySQLConnectionEnv() *MySQLConnectionEnv {
+	return &MySQLConnectionEnv{
+		Host:     getEnv("MYSQL_READONLY_HOST", "127.0.0.1"),
+		Port:     getEnv("MYSQL_PORT", "3306"),
+		User:     getEnv("MYSQL_USER", "isucon"),
+		DBName:   getEnv("MYSQL_DBNAME", "isucondition"),
+		Password: getEnv("MYSQL_PASS", "isucon"),
+	}
+}
+
 func (mc *MySQLConnectionEnv) ConnectDB() (*sqlx.DB, error) {
 	dsn := fmt.Sprintf("%v:%v@tcp(%v:%v)/%v?parseTime=true&loc=Asia%%2FTokyo", mc.User, mc.Password, mc.Host, mc.Port, mc.DBName)
 	return sqlx.Open("mysql", dsn)
@@ -247,6 +259,11 @@ func main() {
 	}
 	db.SetMaxOpenConns(10)
 	defer db.Close()
+
+	mySQLReadonlyConnectionData = NewReadonlyMySQLConnectionEnv()
+	readonlyDb, err = mySQLReadonlyConnectionData.ConnectDB()
+	readonlyDb.SetMaxOpenConns(100)
+	defer readonlyDb.Close()
 
 	postIsuConditionTargetBaseURL = os.Getenv("POST_ISUCONDITION_TARGET_BASE_URL")
 	if postIsuConditionTargetBaseURL == "" {
@@ -322,7 +339,7 @@ func postInitialize(c echo.Context) error {
 		return c.String(http.StatusBadRequest, "bad request body")
 	}
 
-	cmd := exec.Command("../sql/init.sh")
+	cmd := exec.Command("../sql/init2.sh")
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stderr
 	err = cmd.Run()
@@ -486,7 +503,7 @@ func getIsuList(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
-	tx, err := db.Beginx()
+	tx, err := readonlyDb.Beginx()
 	if err != nil {
 		c.Logger().Errorf("db error: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
@@ -705,7 +722,7 @@ func getIsuID(c echo.Context) error {
 	jiaIsuUUID := c.Param("jia_isu_uuid")
 
 	var res Isu
-	err = db.Get(&res, "SELECT * FROM `isu` WHERE `jia_user_id` = ? AND `jia_isu_uuid` = ?",
+	err = readonlyDb.Get(&res, "SELECT * FROM `isu` WHERE `jia_user_id` = ? AND `jia_isu_uuid` = ?",
 		jiaUserID, jiaIsuUUID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -735,7 +752,7 @@ func getIsuIcon(c echo.Context) error {
 	jiaIsuUUID := c.Param("jia_isu_uuid")
 
 	var image []byte
-	err = db.Get(&image, "SELECT `image` FROM `isu` WHERE `jia_user_id` = ? AND `jia_isu_uuid` = ?",
+	err = readonlyDb.Get(&image, "SELECT `image` FROM `isu` WHERE `jia_user_id` = ? AND `jia_isu_uuid` = ?",
 		jiaUserID, jiaIsuUUID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -773,7 +790,7 @@ func getIsuGraph(c echo.Context) error {
 	}
 	date := time.Unix(datetimeInt64, 0).Truncate(time.Hour)
 
-	tx, err := db.Beginx()
+	tx, err := readonlyDb.Beginx()
 	if err != nil {
 		c.Logger().Errorf("db error: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
@@ -1022,7 +1039,7 @@ func getIsuConditions(c echo.Context) error {
 	}
 
 	var isuName string
-	err = db.Get(&isuName,
+	err = readonlyDb.Get(&isuName,
 		"SELECT name FROM `isu` WHERE `jia_isu_uuid` = ? AND `jia_user_id` = ?",
 		jiaIsuUUID, jiaUserID,
 	)
@@ -1035,7 +1052,7 @@ func getIsuConditions(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
-	conditionsResponse, err := getIsuConditionsFromDB(db, jiaIsuUUID, endTime, conditionLevel, startTime, conditionLimit, isuName)
+	conditionsResponse, err := getIsuConditionsFromDB(readonlyDb, jiaIsuUUID, endTime, conditionLevel, startTime, conditionLimit, isuName)
 	if err != nil {
 		c.Logger().Errorf("db error: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
@@ -1163,7 +1180,7 @@ func calculateLevelFlagFromCondition(condition string) (int, error) {
 // ISUの性格毎の最新のコンディション情報
 func getTrend(c echo.Context) error {
 	characterList := []Isu{}
-	err := db.Select(&characterList, "SELECT `character` FROM `isu` GROUP BY `character`")
+	err := readonlyDb.Select(&characterList, "SELECT `character` FROM `isu` GROUP BY `character`")
 	if err != nil {
 		c.Logger().Errorf("db error: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
@@ -1173,7 +1190,7 @@ func getTrend(c echo.Context) error {
 
 	for _, character := range characterList {
 		isuList := []Isu{}
-		err = db.Select(&isuList,
+		err = readonlyDb.Select(&isuList,
 			"SELECT * FROM `isu` WHERE `character` = ?",
 			character.Character,
 		)
@@ -1187,7 +1204,7 @@ func getTrend(c echo.Context) error {
 		characterCriticalIsuConditions := []*TrendCondition{}
 		for _, isu := range isuList {
 			conditions := []IsuCondition{}
-			err = db.Select(&conditions,
+			err = readonlyDb.Select(&conditions,
 				"SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` = ? ORDER BY timestamp DESC LIMIT 1",
 				isu.JIAIsuUUID,
 			)
