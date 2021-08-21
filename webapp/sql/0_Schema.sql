@@ -32,7 +32,7 @@ CREATE TABLE `isu_condition`
 ) ENGINE = InnoDB
   DEFAULT CHARACTER SET = utf8mb4;
 
-CREATE INDEX jia_isu_uuid on isu_condition (jia_isu_uuid);
+CREATE INDEX jia_isu_uuid on isu_condition (jia_isu_uuid, timestamp);
 
 CREATE TABLE `user`
 (
