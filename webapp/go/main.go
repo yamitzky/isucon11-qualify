@@ -279,11 +279,9 @@ func getUserIDFromSession(c echo.Context) (string, int, error) {
 
 	jiaUserID := _jiaUserID.(string)
 	var count int
-	if cached, ok := sessionCaches[jiaUserID]; ok {
-		if cached {
+	if loggedIn, ok := sessionCaches[jiaUserID]; ok {
+		if loggedIn {
 			return jiaUserID, 0, nil
-		} else {
-			return "", http.StatusUnauthorized, fmt.Errorf("not found: user")
 		}
 	}
 	err = db.Get(&count, "SELECT COUNT(*) FROM `user` WHERE `jia_user_id` = ?",
@@ -315,6 +313,7 @@ func getJIAServiceURL(tx *sqlx.Tx) string {
 // サービスを初期化
 func postInitialize(c echo.Context) error {
 	var request InitializeRequest
+	sessionCaches = make(map[string]bool, 0)
 	err := c.Bind(&request)
 	if err != nil {
 		return c.String(http.StatusBadRequest, "bad request body")
