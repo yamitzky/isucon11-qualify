@@ -87,6 +87,7 @@ type IsuCondition struct {
 	IsSitting  bool      `db:"is_sitting"`
 	Condition  string    `db:"condition"`
 	Message    string    `db:"message"`
+	Level      int       `db:"level"`
 	CreatedAt  time.Time `db:"created_at"`
 }
 
@@ -331,6 +332,30 @@ func postInitialize(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
+	_, err = db.Exec("ALTER TABLE `isu_condition` ADD COLUMN `level` TINYINT(1)")
+	if err != nil {
+		c.Logger().Errorf("db error : %v", err)
+		return c.NoContent(http.StatusInternalServerError)
+	}
+
+	_, err = db.Exec("UPDATE `isu_condition` SET level = 1")
+	if err != nil {
+		c.Logger().Errorf("db error : %v", err)
+		return c.NoContent(http.StatusInternalServerError)
+	}
+
+	_, err = db.Exec("UPDATE `isu_condition` SET level = 2 WHERE `condition` = 'is_dirty=true,is_overweight=true,is_broken=true';")
+	if err != nil {
+		c.Logger().Errorf("db error : %v", err)
+		return c.NoContent(http.StatusInternalServerError)
+	}
+
+	_, err = db.Exec("UPDATE `isu_condition` SET level = 0 WHERE `condition` = 'is_dirty=false,is_overweight=false,is_broken=false';")
+	if err != nil {
+		c.Logger().Errorf("db error : %v", err)
+		return c.NoContent(http.StatusInternalServerError)
+	}
+
 	return c.JSON(http.StatusOK, InitializeResponse{
 		Language: "go",
 	})
@@ -486,7 +511,7 @@ func getIsuList(c echo.Context) error {
 
 		var formattedCondition *GetIsuConditionResponse
 		if foundLastCondition {
-			conditionLevel, err := calculateConditionLevel(lastCondition.Condition)
+			conditionLevel, err := calculateLevelFromFlag(lastCondition.Level)
 			if err != nil {
 				c.Logger().Error(err)
 				return c.NoContent(http.StatusInternalServerError)
@@ -963,9 +988,18 @@ func getIsuConditions(c echo.Context) error {
 	if conditionLevelCSV == "" {
 		return c.String(http.StatusBadRequest, "missing: condition_level")
 	}
-	conditionLevel := map[string]interface{}{}
+	conditionLevel := map[int]int{}
 	for _, level := range strings.Split(conditionLevelCSV, ",") {
-		conditionLevel[level] = struct{}{}
+		switch level {
+		case conditionLevelInfo:
+			conditionLevel[0] = 0
+		case conditionLevelWarning:
+			conditionLevel[1] = 1
+		case conditionLevelCritical:
+			conditionLevel[2] = 2
+		default:
+			panic("")
+		}
 	}
 
 	startTimeStr := c.QueryParam("start_time")
@@ -1001,26 +1035,57 @@ func getIsuConditions(c echo.Context) error {
 }
 
 // ISUのコンディションをDBから取得
-func getIsuConditionsFromDB(db *sqlx.DB, jiaIsuUUID string, endTime time.Time, conditionLevel map[string]interface{}, startTime time.Time,
+func getIsuConditionsFromDB(db *sqlx.DB, jiaIsuUUID string, endTime time.Time, conditionLevel map[int]int, startTime time.Time,
 	limit int, isuName string) ([]*GetIsuConditionResponse, error) {
 
 	conditions := []IsuCondition{}
 	var err error
 
+	whereCondition := ""
+	_, info := conditionLevel[0]
+	_, warn := conditionLevel[1]
+	_, crit := conditionLevel[2]
+	if len(conditionLevel) == 1 {
+		if info {
+			whereCondition = " AND level = 0"
+		} else if warn {
+			whereCondition = " AND level = 1"
+		} else if crit {
+			whereCondition = " AND level = 2"
+		}
+
+	} else if len(conditionLevel) == 0 {
+		// 0 は対象ないので。ただ実際にはなさそうだよ
+		whereCondition = " AND FALSE"
+	} else if len(conditionLevel) == 2 {
+		if info && warn {
+			whereCondition = " AND level <= 1"
+		} else if warn && crit {
+			whereCondition = " AND level >= 1"
+		} else {
+			whereCondition = " AND level IN (0, 2)"
+		}
+	}
+	// 3 は全部だからフィルターしないよ
+
 	if startTime.IsZero() {
 		err = db.Select(&conditions,
 			"SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` = ?"+
 				"	AND `timestamp` < ?"+
-				"	ORDER BY `timestamp` DESC",
-			jiaIsuUUID, endTime,
+				whereCondition+
+				"	ORDER BY `timestamp` DESC"+
+				"   LIMIT ?",
+			jiaIsuUUID, endTime, limit,
 		)
 	} else {
 		err = db.Select(&conditions,
 			"SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` = ?"+
 				"	AND `timestamp` < ?"+
 				"	AND ? <= `timestamp`"+
-				"	ORDER BY `timestamp` DESC",
-			jiaIsuUUID, endTime, startTime,
+				whereCondition+
+				"	ORDER BY `timestamp` DESC"+
+				"   LIMIT ?",
+			jiaIsuUUID, endTime, startTime, limit,
 		)
 	}
 	if err != nil {
@@ -1029,46 +1094,57 @@ func getIsuConditionsFromDB(db *sqlx.DB, jiaIsuUUID string, endTime time.Time, c
 
 	conditionsResponse := []*GetIsuConditionResponse{}
 	for _, c := range conditions {
-		cLevel, err := calculateConditionLevel(c.Condition)
+		cLevel, err := calculateLevelFromFlag(c.Level)
 		if err != nil {
 			continue
 		}
 
-		if _, ok := conditionLevel[cLevel]; ok {
-			data := GetIsuConditionResponse{
-				JIAIsuUUID:     c.JIAIsuUUID,
-				IsuName:        isuName,
-				Timestamp:      c.Timestamp.Unix(),
-				IsSitting:      c.IsSitting,
-				Condition:      c.Condition,
-				ConditionLevel: cLevel,
-				Message:        c.Message,
-			}
-			conditionsResponse = append(conditionsResponse, &data)
+		data := GetIsuConditionResponse{
+			JIAIsuUUID:     c.JIAIsuUUID,
+			IsuName:        isuName,
+			Timestamp:      c.Timestamp.Unix(),
+			IsSitting:      c.IsSitting,
+			Condition:      c.Condition,
+			ConditionLevel: cLevel,
+			Message:        c.Message,
 		}
-	}
-
-	if len(conditionsResponse) > limit {
-		conditionsResponse = conditionsResponse[:limit]
+		conditionsResponse = append(conditionsResponse, &data)
 	}
 
 	return conditionsResponse, nil
 }
 
-// ISUのコンディションの文字列からコンディションレベルを計算
-func calculateConditionLevel(condition string) (string, error) {
+func calculateLevelFromFlag(flag int) (string, error) {
 	var conditionLevel string
+
+	switch flag {
+	case 0:
+		conditionLevel = conditionLevelInfo
+	case 1:
+		conditionLevel = conditionLevelWarning
+	case 2:
+		conditionLevel = conditionLevelCritical
+	default:
+		return "", fmt.Errorf("unexpected warn count")
+	}
+
+	return conditionLevel, nil
+}
+
+// ISUのコンディションの文字列からコンディションレベルを計算
+func calculateLevelFlagFromCondition(condition string) (int, error) {
+	var conditionLevel int
 
 	warnCount := strings.Count(condition, "=true")
 	switch warnCount {
 	case 0:
-		conditionLevel = conditionLevelInfo
+		conditionLevel = 0
 	case 1, 2:
-		conditionLevel = conditionLevelWarning
+		conditionLevel = 1
 	case 3:
-		conditionLevel = conditionLevelCritical
+		conditionLevel = 2
 	default:
-		return "", fmt.Errorf("unexpected warn count")
+		return -1, fmt.Errorf("unexpected warn count")
 	}
 
 	return conditionLevel, nil
@@ -1103,7 +1179,7 @@ func getTrend(c echo.Context) error {
 		for _, isu := range isuList {
 			conditions := []IsuCondition{}
 			err = db.Select(&conditions,
-				"SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` = ? ORDER BY timestamp DESC",
+				"SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` = ? ORDER BY timestamp DESC LIMIT 1",
 				isu.JIAIsuUUID,
 			)
 			if err != nil {
@@ -1113,21 +1189,16 @@ func getTrend(c echo.Context) error {
 
 			if len(conditions) > 0 {
 				isuLastCondition := conditions[0]
-				conditionLevel, err := calculateConditionLevel(isuLastCondition.Condition)
-				if err != nil {
-					c.Logger().Error(err)
-					return c.NoContent(http.StatusInternalServerError)
-				}
 				trendCondition := TrendCondition{
 					ID:        isu.ID,
 					Timestamp: isuLastCondition.Timestamp.Unix(),
 				}
-				switch conditionLevel {
-				case "info":
+				switch isuLastCondition.Level {
+				case 0:
 					characterInfoIsuConditions = append(characterInfoIsuConditions, &trendCondition)
-				case "warning":
+				case 1:
 					characterWarningIsuConditions = append(characterWarningIsuConditions, &trendCondition)
-				case "critical":
+				case 2:
 					characterCriticalIsuConditions = append(characterCriticalIsuConditions, &trendCondition)
 				}
 			}
@@ -1202,11 +1273,17 @@ func postIsuCondition(c echo.Context) error {
 			return c.String(http.StatusBadRequest, "bad request body")
 		}
 
+		level, err := calculateLevelFlagFromCondition(cond.Condition)
+		if err != nil {
+			c.Logger().Errorf("calc error: %v", err)
+			return c.NoContent(http.StatusInternalServerError)
+		}
+
 		_, err = tx.Exec(
 			"INSERT INTO `isu_condition`"+
-				"	(`jia_isu_uuid`, `timestamp`, `is_sitting`, `condition`, `message`)"+
-				"	VALUES (?, ?, ?, ?, ?)",
-			jiaIsuUUID, timestamp, cond.IsSitting, cond.Condition, cond.Message)
+				"	(`jia_isu_uuid`, `timestamp`, `is_sitting`, `condition`, `message`, `level`)"+
+				"	VALUES (?, ?, ?, ?, ?, ?)",
+			jiaIsuUUID, timestamp, cond.IsSitting, cond.Condition, cond.Message, level)
 		if err != nil {
 			c.Logger().Errorf("db error: %v", err)
 			return c.NoContent(http.StatusInternalServerError)
