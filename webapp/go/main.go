@@ -265,6 +265,8 @@ func getSession(r *http.Request) (*sessions.Session, error) {
 	return session, nil
 }
 
+var sessionCaches map[string] bool = make(map[string]bool, 0)
+
 func getUserIDFromSession(c echo.Context) (string, int, error) {
 	session, err := getSession(c.Request())
 	if err != nil {
@@ -277,7 +279,13 @@ func getUserIDFromSession(c echo.Context) (string, int, error) {
 
 	jiaUserID := _jiaUserID.(string)
 	var count int
-
+	if cached, ok := sessionCaches[jiaUserID]; ok {
+		if cached {
+			return jiaUserID, 0, nil
+		} else {
+			return "", http.StatusUnauthorized, fmt.Errorf("not found: user")
+		}
+	}
 	err = db.Get(&count, "SELECT COUNT(*) FROM `user` WHERE `jia_user_id` = ?",
 		jiaUserID)
 	if err != nil {
@@ -287,7 +295,7 @@ func getUserIDFromSession(c echo.Context) (string, int, error) {
 	if count == 0 {
 		return "", http.StatusUnauthorized, fmt.Errorf("not found: user")
 	}
-
+	sessionCaches[jiaUserID] = true
 	return jiaUserID, 0, nil
 }
 
@@ -396,7 +404,7 @@ func postAuthentication(c echo.Context) error {
 // POST /api/signout
 // サインアウト
 func postSignout(c echo.Context) error {
-	_, errStatusCode, err := getUserIDFromSession(c)
+	userId, errStatusCode, err := getUserIDFromSession(c)
 	if err != nil {
 		if errStatusCode == http.StatusUnauthorized {
 			return c.String(http.StatusUnauthorized, "you are not signed in")
@@ -418,7 +426,7 @@ func postSignout(c echo.Context) error {
 		c.Logger().Error(err)
 		return c.NoContent(http.StatusInternalServerError)
 	}
-
+	sessionCaches[userId] = false
 	return c.NoContent(http.StatusOK)
 }
 
