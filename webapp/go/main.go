@@ -752,7 +752,7 @@ func getIsuIcon(c echo.Context) error {
 	jiaIsuUUID := c.Param("jia_isu_uuid")
 
 	var image []byte
-	err = readonlyDb.Get(&image, "SELECT `image` FROM `isu` WHERE `jia_user_id` = ? AND `jia_isu_uuid` = ?",
+	err = db.Get(&image, "SELECT `image` FROM `isu` WHERE `jia_user_id` = ? AND `jia_isu_uuid` = ?",
 		jiaUserID, jiaIsuUUID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1039,7 +1039,7 @@ func getIsuConditions(c echo.Context) error {
 	}
 
 	var isuName string
-	err = readonlyDb.Get(&isuName,
+	err = db.Get(&isuName,
 		"SELECT name FROM `isu` WHERE `jia_isu_uuid` = ? AND `jia_user_id` = ?",
 		jiaIsuUUID, jiaUserID,
 	)
@@ -1180,7 +1180,7 @@ func calculateLevelFlagFromCondition(condition string) (int, error) {
 // ISUの性格毎の最新のコンディション情報
 func getTrend(c echo.Context) error {
 	characterList := []Isu{}
-	err := readonlyDb.Select(&characterList, "SELECT `character` FROM `isu` GROUP BY `character`")
+	err := db.Select(&characterList, "SELECT `character` FROM `isu` GROUP BY `character`")
 	if err != nil {
 		c.Logger().Errorf("db error: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
@@ -1190,7 +1190,7 @@ func getTrend(c echo.Context) error {
 
 	for _, character := range characterList {
 		isuList := []Isu{}
-		err = readonlyDb.Select(&isuList,
+		err = db.Select(&isuList,
 			"SELECT * FROM `isu` WHERE `character` = ?",
 			character.Character,
 		)
