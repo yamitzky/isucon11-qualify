@@ -1,0 +1,36 @@
+version: "3"
+services:
+  env:
+    image: "golang:1.16"
+    environment:
+      - ENV=dev
+      - MYSQL_HOST=rdb
+      - MYSQL_PORT=3306
+      - MYSQL_USER=isucon
+      - MYSQL_DBNAME=isucondition
+      - MYSQL_PWD=isucon
+      - POST_ISUCONDITION_TARGET_BASE_URL=http://127.0.0.1:5000
+    working_dir: /opt/app/go
+    volumes:
+      - ./go:/opt/app/go
+      - ./public:/opt/app/public
+      - ./ec256-public.pem:/opt/app/ec256-public.pem
+    command: /bin/sh -c 'go get -u github.com/cosmtrek/air && air'
+    ports:
+      - 8888:3000
+    depends_on:
+      - rdb
+  rdb:
+    image: "mysql:5.7"
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_USER=isucon
+      - MYSQL_PASSWORD=isucon
+      - MYSQL_DATABASE=isucondition
+    volumes:
+      - ./sql/0_Schema.sql:/docker-entrypoint-initdb.d/0_Schema.sql
+      - ./sql/1_initData.sql:/docker-entrypoint-initdb.d/1_initData.sql
+      - db-volume:/var/lib/mysql
+    command: --lower-case-table-names=1 --character-set-server=utf8 --collation-server=utf8_unicode_ci --general-log=1 --general-log-file=/var/log/mysql/query.log --log-output=FILE
+volumes:
+  db-volume:
