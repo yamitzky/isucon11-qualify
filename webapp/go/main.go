@@ -265,6 +265,8 @@ func getSession(r *http.Request) (*sessions.Session, error) {
 	return session, nil
 }
 
+var sessionCaches map[string] bool = make(map[string]bool, 0)
+
 func getUserIDFromSession(c echo.Context) (string, int, error) {
 	session, err := getSession(c.Request())
 	if err != nil {
@@ -278,6 +280,12 @@ func getUserIDFromSession(c echo.Context) (string, int, error) {
 	jiaUserID := _jiaUserID.(string)
 	var count int
 
+	if loggedIn, ok := sessionCaches[jiaUserID]; ok {
+
+		if loggedIn {
+			return jiaUserID, 0, nil
+		}
+	}
 	err = db.Get(&count, "SELECT COUNT(*) FROM `user` WHERE `jia_user_id` = ?",
 		jiaUserID)
 	if err != nil {
@@ -287,7 +295,7 @@ func getUserIDFromSession(c echo.Context) (string, int, error) {
 	if count == 0 {
 		return "", http.StatusUnauthorized, fmt.Errorf("not found: user")
 	}
-
+	sessionCaches[jiaUserID] = true
 	return jiaUserID, 0, nil
 }
 
@@ -307,6 +315,7 @@ func getJIAServiceURL(tx *sqlx.Tx) string {
 // サービスを初期化
 func postInitialize(c echo.Context) error {
 	var request InitializeRequest
+	sessionCaches = make(map[string]bool, 0)
 	err := c.Bind(&request)
 	if err != nil {
 		return c.String(http.StatusBadRequest, "bad request body")
@@ -396,7 +405,7 @@ func postAuthentication(c echo.Context) error {
 // POST /api/signout
 // サインアウト
 func postSignout(c echo.Context) error {
-	_, errStatusCode, err := getUserIDFromSession(c)
+	userId, errStatusCode, err := getUserIDFromSession(c)
 	if err != nil {
 		if errStatusCode == http.StatusUnauthorized {
 			return c.String(http.StatusUnauthorized, "you are not signed in")
@@ -418,7 +427,7 @@ func postSignout(c echo.Context) error {
 		c.Logger().Error(err)
 		return c.NoContent(http.StatusInternalServerError)
 	}
-
+	sessionCaches[userId] = false
 	return c.NoContent(http.StatusOK)
 }
 
@@ -747,6 +756,7 @@ func getIsuGraph(c echo.Context) error {
 	defer tx.Rollback()
 
 	var count int
+
 	err = tx.Get(&count, "SELECT COUNT(*) FROM `isu` WHERE `jia_user_id` = ? AND `jia_isu_uuid` = ?",
 		jiaUserID, jiaIsuUUID)
 	if err != nil {
@@ -779,8 +789,8 @@ func generateIsuGraphResponse(tx *sqlx.Tx, jiaIsuUUID string, graphDate time.Tim
 	timestampsInThisHour := []int64{}
 	var startTimeInThisHour time.Time
 	var condition IsuCondition
-
-	rows, err := tx.Queryx("SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` = ? ORDER BY `timestamp` ASC", jiaIsuUUID)
+	endTime := graphDate.Add(time.Hour * 24)
+	rows, err := tx.Queryx("SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` = ? AND ? <= `timestamp` AND `timestamp` <= ? ORDER BY `timestamp` ASC", jiaIsuUUID, graphDate, endTime)
 	if err != nil {
 		return nil, fmt.Errorf("db error: %v", err)
 	}
@@ -829,7 +839,6 @@ func generateIsuGraphResponse(tx *sqlx.Tx, jiaIsuUUID string, graphDate time.Tim
 				ConditionTimestamps: timestampsInThisHour})
 	}
 
-	endTime := graphDate.Add(time.Hour * 24)
 	startIndex := len(dataPoints)
 	endNextIndex := len(dataPoints)
 	for i, graph := range dataPoints {
