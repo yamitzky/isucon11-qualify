@@ -268,7 +268,6 @@ func getSession(r *http.Request) (*sessions.Session, error) {
 var sessionCaches map[string] bool = make(map[string]bool, 0)
 
 func getUserIDFromSession(c echo.Context) (string, int, error) {
-	fmt.Println("cached %v", sessionCaches)
 	session, err := getSession(c.Request())
 	if err != nil {
 		return "", http.StatusInternalServerError, fmt.Errorf("failed to get session: %v", err)
@@ -791,7 +790,6 @@ func generateIsuGraphResponse(tx *sqlx.Tx, jiaIsuUUID string, graphDate time.Tim
 	var startTimeInThisHour time.Time
 	var condition IsuCondition
 	endTime := graphDate.Add(time.Hour * 24)
-	fmt.Println("time", endTime, graphDate)
 	rows, err := tx.Queryx("SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` = ? AND ? <= `timestamp` AND `timestamp` <= ? ORDER BY `timestamp` ASC", jiaIsuUUID, graphDate, endTime)
 	if err != nil {
 		return nil, fmt.Errorf("db error: %v", err)
