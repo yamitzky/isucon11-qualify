@@ -1266,7 +1266,7 @@ func postIsuCondition(c echo.Context) error {
 	num := hash(jiaIsuUUID)
 	mod := float64(num%1000) / 1000
 
-	dropProbability := 0.9
+	dropProbability := 0.6
 	if mod <= dropProbability {
 		c.Logger().Warnf("drop post isu condition request")
 		return c.NoContent(http.StatusAccepted)
